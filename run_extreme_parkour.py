@@ -157,15 +157,15 @@ def main(args):
 
     # base_model_name = '329-12-38-19500-base_jit.pt'
     # base_model_name = '334-11-17000-base_jit.pt'
-    base_model_name = '336-11-29500-base_jit.pt'
+    base_model = '336-11-29500-base_jit.pt'
     # base_model_name = '418-17-50-8500-base_jit.pt'
-    base_model_path = os.path.join(args.logdir, base_model_name)
+    base_model_path = os.path.join(args.logdir, base_model)
 
     # vision_model_name = '329-12-38-19500-vision_weight.pt'
     # vision_model_name = '334-11-17000-vision_weight.pt'
-    vision_model_name = '336-11-29500-vision_weight.pt'
+    vision_model = '336-11-29500-vision_weight.pt'
     # vision_model_name = '418-17-50-8500-vision_weight.pt'
-    vision_model_path = os.path.join(args.logdir, vision_model_name)
+    vision_model_path = os.path.join(args.logdir, vision_model)
 
     base_model = torch.jit.load(base_model_path, map_location=device)
     base_model.eval()
