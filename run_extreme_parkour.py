@@ -3,21 +3,14 @@ from rclpy.node import Node
 from unitree_ros2_real import UnitreeRos2Real, get_euler_xyz
 
 import os
-import ast
 import os.path as osp
 import json
 import time
 from collections import OrderedDict
-from copy import deepcopy
 import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.autograd import Variable
 from torch import nn
-
-from rsl_rl import modules
-from rsl_rl.modules import StateHistoryEncoder, RecurrentDepthBackbone, DepthOnlyFCBackbone58x87
-import cv2
+from rsl_rl.modules import RecurrentDepthBackbone, DepthOnlyFCBackbone58x87
 
 
 class Go2Node(UnitreeRos2Real):
@@ -30,8 +23,8 @@ class Go2Node(UnitreeRos2Real):
 
         self.sim_ite = 3
 
-        self.start = False
-
+    # This warm up is useful in my experiment on Go2
+    # The first two iterations are very slow, but the rest is fast
     def warm_up(self):
         for _ in range(2):
             start_time = time.monotonic()
@@ -111,7 +104,7 @@ class Go2Node(UnitreeRos2Real):
 
             # action = self.actions_sim[self.sim_ite, :]
             self.send_action(action)
-            print('action: ', action)
+            # print('action: ', action)
             self.sim_ite += 1
 
             publish_time = time.monotonic()
@@ -155,16 +148,12 @@ def main(args):
     env_node.get_logger().info("Motor Damping (kd): {}".format(env_node.d_gains))
 
 
-    # base_model_name = '329-12-38-19500-base_jit.pt'
-    # base_model_name = '334-11-17000-base_jit.pt'
+    # base_model = '329-12-38-19500-base_jit.pt'
     base_model = '336-11-29500-base_jit.pt'
-    # base_model_name = '418-17-50-8500-base_jit.pt'
     base_model_path = os.path.join(args.logdir, base_model)
 
     # vision_model_name = '329-12-38-19500-vision_weight.pt'
-    # vision_model_name = '334-11-17000-vision_weight.pt'
     vision_model = '336-11-29500-vision_weight.pt'
-    # vision_model_name = '418-17-50-8500-vision_weight.pt'
     vision_model_path = os.path.join(args.logdir, vision_model)
 
     base_model = torch.jit.load(base_model_path, map_location=device)
@@ -180,10 +169,6 @@ def main(args):
     depth_encoder.load_state_dict(vision_model['depth_encoder_state_dict'])
     depth_encoder.to(device)
     depth_encoder.eval()
-
-    n_proprio = env_node.n_proprio
-    n_depth_latent = env_node.n_depth_latent
-    n_hist_len = env_node.n_hist_len
     
     def turn_obs(proprio, depth_latent_yaw, proprio_history, n_proprio, n_depth_latent, n_hist_len):
         depth_latent = depth_latent_yaw[:, :-2]

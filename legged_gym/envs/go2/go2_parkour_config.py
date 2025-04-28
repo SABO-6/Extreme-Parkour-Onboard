@@ -79,18 +79,37 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
-        # file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go1/urdf/go1_new.urdf'
         file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2.urdf'
         foot_name = "foot"
-        penalize_contacts_on = ["thigh", "calf", "base"]
+
         # From Go1
-        # penalize_contacts_on = ["thigh", "calf"]
+        penalize_contacts_on = ["thigh", "calf"]
+        # penalize_contacts_on = ["thigh", "calf", "base"]
+
         terminate_after_contacts_on = ["base"]#, "thigh", "calf"]
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
   
     class rewards( LeggedRobotCfg.rewards ):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
+    
+    class depth( LeggedRobotCfg.depth):
+        
+        position = dict(
+            mean = [0.24, -0.0175, 0.12],
+            std = [0.01, 0.0025, 0.03],
+        )
+        # position = (0.24, -0.0175, 0.07)
+        rotation = dict(
+            lower = [-0.1, 0.37, -0.1],
+            upper = [0.1, 0.43, 0.1],
+        )
+        # 广角
+        horizontal_fov = [86, 90]
+        # Depth image noise(not very useful, set to 0 in the original code)
+        dis_noise = 0.1
+        # The closet distance that the depth camera can see
+        near_plane = 0.2 # [m]
 
 class Go2ParkourCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):

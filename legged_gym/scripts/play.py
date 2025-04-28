@@ -50,11 +50,11 @@ from legged_gym.utils import webviewer
 from rsl_rl.modules import RecurrentDepthBackbone, DepthOnlyFCBackbone58x87
 
 def get_load_path(root, load_run=-1, checkpoint=-1, model_name_include="model", exptid=None):
-    # if checkpoint==-1:
-    #     models = [file for file in os.listdir(root) if model_name_include in file]
-    #     models.sort(key=lambda m: '{0:0>15}'.format(m))
-    #     model = models[-1]
-    #     checkpoint = model.split("_")[-1].split(".")[0]
+    if checkpoint==-1:
+        models = [file for file in os.listdir(root) if model_name_include in file]
+        models.sort(key=lambda m: '{0:0>15}'.format(m))
+        model = models[-1]
+        checkpoint = model.split("_")[-1].split(".")[0]
 
     return model, checkpoint
 
@@ -69,8 +69,7 @@ def play(args):
     # override some parameters for testing
     if args.nodelay:
         env_cfg.domain_rand.action_delay_view = 0
-    env_cfg.env.num_envs = 5 if not args.save else 64
-    # env_cfg.env.num_envs = 1
+    env_cfg.env.num_envs = 10
     env_cfg.env.episode_length_s = 60
     env_cfg.commands.resampling_time = 60
     env_cfg.terrain.num_rows = 5
@@ -108,15 +107,17 @@ def play(args):
     env_cfg.domain_rand.push_interval_s = 6
     env_cfg.domain_rand.randomize_base_mass = False
     env_cfg.domain_rand.randomize_base_com = False
+    
+    env_cfg_dict = class_to_dict(env_cfg)
+    config_path = os.path.join(log_pth, "traced")
+    with open(os.path.join(config_path, "config.json"), "w") as f:
+        json.dump(env_cfg_dict, f, indent=4)
+    print('env config has been saved.')
 
-    depth_latent_buffer = []
     # prepare environment
     env: LeggedRobot
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     obs = env.get_observations()
-
-    # print('observation shape: ', obs.shape)
-    # print('observation: ', obs)
 
     if args.web:
         web_viewer.setup(env)
@@ -124,20 +125,10 @@ def play(args):
     # load policy
     train_cfg.runner.resume = True
     ppo_runner, train_cfg, log_pth = task_registry.make_alg_runner(log_root = log_pth, env=env, name=args.task, args=args, train_cfg=train_cfg, return_log_dir=True)
-    
-    if args.use_jit:
-        path = os.path.join(log_pth, "traced")
-        model = f'{args.exptid}-{args.checkpoint}-base_jit.pt'
-        path = os.path.join(path, model)
-        print('Loading jit policy from path: ', path)
-        # print('load jit path: ', path)
-        # model, checkpoint = get_load_path(root=path, checkpoint=args.checkpoint, exptid=args.exptid)
-        # path = os.path.join(path, model)
-        # print("Loading jit for policy: ", path)
-        policy_jit = torch.jit.load(path, map_location=env.device)
-    else:
-        policy = ppo_runner.get_inference_policy(device=env.device)
+
+    policy = ppo_runner.get_inference_policy(device=env.device)
     estimator = ppo_runner.get_estimator_inference_policy(device=env.device)
+
     if env.cfg.depth.use_camera:
         depth_encoder = ppo_runner.get_depth_encoder_inference_policy(device=env.device)
 
@@ -149,47 +140,28 @@ def play(args):
     idx = 0
 
     for i in range(10*int(env.max_episode_length)):
-        if args.use_jit:
-            if env.cfg.depth.use_camera:
-                if infos["depth"] is not None:
-                    depth_latent = torch.ones((env_cfg.env.num_envs, 32), device=env.device)
-                    actions, depth_latent = policy_jit(obs.detach(), True, infos["depth"], depth_latent)
-                else:
-                    depth_buffer = torch.ones((env_cfg.env.num_envs, 58, 87), device=env.device)
-                    actions, depth_latent = policy_jit(obs.detach(), False, depth_buffer, depth_latent)
-            else:
-                obs_jit = torch.cat((obs.detach()[:, :env_cfg.env.n_proprio+env_cfg.env.n_priv], obs.detach()[:, -env_cfg.env.history_len*env_cfg.env.n_proprio:]), dim=1)
-                actions = policy(obs_jit)
+        if env.cfg.depth.use_camera:
+            if infos["depth"] is not None:
+                obs_student = obs[:, :env.cfg.env.n_proprio].clone()
+                obs_student[:, 6:8] = 0
+                depth_latent_and_yaw = depth_encoder(infos["depth"], obs_student)
+                depth_latent = depth_latent_and_yaw[:, :-2]
+                yaw = depth_latent_and_yaw[:, -2:]
+            obs[:, 6:8] = 1.5*yaw
         else:
-            if env.cfg.depth.use_camera:
-                if infos["depth"] is not None:
-                    obs_student = obs[:, :env.cfg.env.n_proprio].clone()
-                    obs_student[:, 6:8] = 0
-                    # print('obs_student shape', obs_student.shape)
-                    # turn_image(infos["depth"][0,:,:], idx)
-                    # idx += 1
-                    depth_latent_and_yaw = depth_encoder(infos["depth"], obs_student)
-                    # print('depth image shape: ', infos['depth'].shape)
-                    depth_latent = depth_latent_and_yaw[:, :-2]
-                    yaw = depth_latent_and_yaw[:, -2:]
-                obs[:, 6:8] = 1.5*yaw
-
-            else:
-                depth_latent = None
-            
-            # 替换为估计的 lin_vel
-            use_estimate_lin_vel = True
-            if use_estimate_lin_vel:
-                est_lin_vel = ppo_runner.get_estimator_inference_policy()(obs[:, :env.cfg.env.n_proprio])
-                obs[:, env.cfg.env.n_proprio+env.cfg.env.n_scan:env.cfg.env.n_proprio+env.cfg.env.n_scan+env.cfg.env.n_priv] = est_lin_vel
-            
-            if hasattr(ppo_runner.alg, "depth_actor"):
-                actions = ppo_runner.alg.depth_actor(obs.detach(), hist_encoding=True, scandots_latent=depth_latent)
-            else:
-                actions = policy(obs.detach(), hist_encoding=True, scandots_latent=depth_latent)
-            
-        if i % 100 == 0:
-            print('look at id: ', env.lookat_id)
+            depth_latent = None
+        
+        # The original code is wrong here.
+        use_estimate_lin_vel = True
+        if use_estimate_lin_vel:
+            est_lin_vel = ppo_runner.get_estimator_inference_policy()(obs[:, :env.cfg.env.n_proprio])
+            obs[:, env.cfg.env.n_proprio+env.cfg.env.n_scan:env.cfg.env.n_proprio+env.cfg.env.n_scan+env.cfg.env.n_priv] = est_lin_vel
+        
+        if hasattr(ppo_runner.alg, "depth_actor"):
+            actions = ppo_runner.alg.depth_actor(obs.detach(), hist_encoding=True, scandots_latent=depth_latent)
+        else:
+            actions = policy(obs.detach(), hist_encoding=True, scandots_latent=depth_latent)
+        
         # print('observation shape: ', obs[env.lookat_id].shape) # num_env * 753 (proprio 53 + scandot 132 + priv_explicit（线速度） 9 + priv_latent （重力，摩擦系数） 29 + history latent 530)
         
         # num_observations = n_proprio + n_scan + n_priv + n_priv_latent + history_len*n_proprio
@@ -213,14 +185,13 @@ def play(args):
         # print('commands: ', obs[env.lookat_id, 8:11])
 
         # env class 17？
-        if i % 100 == 0:
-            print('env class == 17?', obs[env.lookat_id, 11:13])
+        # if i % 100 == 0:
+        #     print('env class == 17?', obs[env.lookat_id, 11:13])
 
         # contact filt
         # example tensor([ 0.5000, -0.5000, -0.5000,  0.5000], device='cuda:0', grad_fn=<SliceBackward0>)
         # 猜测接触是 0.5, 没接触是 -0.5
         # print('contact filt: ', obs[env.lookat_id, -4:]) # 4
-
 
         # 132 scandot 
         # print('scandot latent: ', ppo_runner.get_depth_actor_scandots_latent(obs[env.lookat_id, :].unsqueeze(0), device=env.device)) # 32
@@ -250,24 +221,9 @@ def play(args):
                         step_graphics=True,
                         render_all_camera_sensors=True,
                         wait_for_page_load=True)
-        # print("time:", env.episode_length_buf[env.lookat_id].item() / 50, 
-        #       "cmd vx", env.commands[env.lookat_id, 0].item(),
-        #       "actual vx", env.base_lin_vel[env.lookat_id, 0].item(), )
-        
-        id = env.lookat_id
 
-# output_dir = '/home/zhanghb2023/project/extreme-parkour/legged_gym/logs/depth_images'
-# os.makedirs(output_dir, exist_ok=True)
-# def turn_image(obs, idx):
-#     obs = obs.cpu().numpy()
-#     print('obs shape: ', obs.shape)
-#     print('image example: ', obs[0, :])
-#     # obs = obs.reshape(58, 87) + 0.5
-#     # obs = cv2.rotate(obs, cv2.ROTATE_90_CLOCKWISE)
-#     # obs = cv2.flip(obs, 1)
-#     cv2.imwrite(os.path.join(output_dir, f'obs_image_{idx}.png'), obs * 255)
-#     # cv2.imwrite("depth_images/depth_{}.png".format(idx), obs)
-#     print(f'successfully save image in {output_dir}.')
+
+        id = env.lookat_id
         
 
 if __name__ == '__main__':

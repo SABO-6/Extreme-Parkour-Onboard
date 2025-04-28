@@ -20,8 +20,6 @@ elif os.uname().machine == "aarch64":
     ))
 from crc_module import get_crc
 
-from multiprocessing import Process
-from collections import OrderedDict
 import numpy as np
 import torch
 import time
@@ -95,7 +93,7 @@ class RobotCfgs:
             -1.0472, -0.5236, -2.7227,
             -1.0472, -0.5236, -2.7227,
         ], device= "cpu", dtype= torch.float32)
-        torque_limits = torch.tensor([ # from urdf and in simulation order
+        torque_limits = torch.tensor([ # from urdf
             25, 40, 40,
             25, 40, 40,
             25, 40, 40,
@@ -162,7 +160,6 @@ class UnitreeRos2Real(Node):
         self.cmd_ny_range = cmd_ny_range
         self.cmd_pyaw_range = cmd_pyaw_range
         self.cmd_nyaw_range = cmd_nyaw_range
-        # self.replace_obs_with_embeddings = replace_obs_with_embeddings
         self.move_by_wireless_remote = move_by_wireless_remote
         self.model_device = model_device
         self.dof_pos_protect_ratio = dof_pos_protect_ratio
@@ -181,10 +178,9 @@ class UnitreeRos2Real(Node):
 
         self.proprio_history_buf = torch.zeros(1, self.n_hist_len, self.n_proprio, device=self.model_device, dtype=torch.float)
         self.episode_length_buf = torch.zeros(1, device=self.model_device, dtype=torch.float)
-        self.forward_depth_latent_yaw_buffer = torch.zeros(1, self.n_depth_latent+2, device=self.model_device, dtype=torch.float)
         self.xyyaw_command = torch.tensor([[0, 0, 0]], device= self.model_device, dtype= torch.float32)
         self.contact_filt = torch.zeros((1, 4), device= self.model_device, dtype= torch.float32)
-        self.last_contact_filt = torch.zeros((1, 4), device= self.model_device, dtype= torch.float32)
+        # self.last_contact_filt = torch.zeros((1, 4), device= self.model_device, dtype= torch.float32)
 
         self.parse_config()
         
@@ -302,7 +298,7 @@ class UnitreeRos2Real(Node):
     """ ROS callbacks and handlers that update the buffer """
 
     def _low_state_callback(self, msg):
-        # self.get_logger().warn("Low state message received.")
+        # self.get_logger().info("Low state message received.")
         """ store and handle proprioception data """
         self.low_state_buffer = msg # keep the latest low state
 
@@ -324,7 +320,7 @@ class UnitreeRos2Real(Node):
                 raise SystemExit()
 
     def _joy_stick_callback(self, msg):
-        # self.get_logger().warn("Wireless controller message received.")
+        # self.get_logger().info("Wireless controller message received.")
         self.joy_stick_buffer = msg
         if self.move_by_wireless_remote:
             # left-y for forward/backward
@@ -368,7 +364,7 @@ class UnitreeRos2Real(Node):
             self._turn_off_motors()
             raise SystemExit()
 
-        # roll-pitch target
+        # roll-pitch target, not implemented yet
         if hasattr(self, "roll_pitch_yaw_cmd"):
             if (msg.keys & self.WirelessButtons.up):
                 self.roll_pitch_yaw_cmd[0, 1] += 0.1

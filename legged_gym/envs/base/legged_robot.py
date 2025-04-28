@@ -121,6 +121,7 @@ class LeggedRobot(BaseTask):
 
         actions.to(self.device)
         self.action_history_buf = torch.cat([self.action_history_buf[:, 1:].clone(), actions[:, None, :].clone()], dim=1)
+        # False, no action delay
         if self.cfg.domain_rand.action_delay:
             if self.global_counter % self.cfg.domain_rand.delay_update_global_steps == 0:
                 if len(self.cfg.domain_rand.action_curr_step) != 0:
@@ -402,7 +403,7 @@ class LeggedRobot(BaseTask):
                             0*self.commands[:, 0:2], # 两个来自控制器的命令，占位？
                             self.commands[:, 0:1],  #[1,1] 前进速度命令
                             (self.env_class != 17).float()[:, None], # 为什么和第 17 个环境有关？
-                            (self.env_class == 17).float()[:, None],
+                            (self.env_class == 17).float()[:, None], # parkour or walk
                             self.reindex((self.dof_pos - self.default_dof_pos_all) * self.obs_scales.dof_pos), # 12
                             self.reindex(self.dof_vel * self.obs_scales.dof_vel), # 12
                             self.reindex(self.action_history_buf[:, -1]), # 12
@@ -887,6 +888,31 @@ class LeggedRobot(BaseTask):
         self.x_edge_mask = torch.tensor(self.terrain.x_edge_mask).view(self.terrain.tot_rows, self.terrain.tot_cols).to(self.device)
 
 
+    # def attach_camera(self, i, env_handle, actor_handle):
+    #     if self.cfg.depth.use_camera:
+    #         config = self.cfg.depth
+    #         camera_props = gymapi.CameraProperties()
+    #         camera_props.width = self.cfg.depth.original[0]
+    #         camera_props.height = self.cfg.depth.original[1]
+    #         camera_props.enable_tensors = True
+    #         camera_horizontal_fov = self.cfg.depth.horizontal_fov 
+    #         camera_props.horizontal_fov = camera_horizontal_fov
+
+    #         camera_handle = self.gym.create_camera_sensor(env_handle, camera_props)
+    #         self.cam_handles.append(camera_handle)
+            
+    #         local_transform = gymapi.Transform()
+            
+    #         camera_position = np.copy(config.position)
+    #         camera_angle = np.random.uniform(config.angle[0], config.angle[1])
+            
+    #         local_transform.p = gymapi.Vec3(*camera_position)
+    #         local_transform.r = gymapi.Quat.from_euler_zyx(0, np.radians(camera_angle), 0)
+    #         root_handle = self.gym.get_actor_root_rigid_body_handle(env_handle, actor_handle)
+            
+    #         self.gym.attach_camera_to_body(camera_handle, env_handle, root_handle, local_transform, gymapi.FOLLOW_TRANSFORM)
+
+    # Add randomization to camera position, rotation, horizontal_fov, near_plane
     def attach_camera(self, i, env_handle, actor_handle):
         if self.cfg.depth.use_camera:
             config = self.cfg.depth
@@ -894,19 +920,49 @@ class LeggedRobot(BaseTask):
             camera_props.width = self.cfg.depth.original[0]
             camera_props.height = self.cfg.depth.original[1]
             camera_props.enable_tensors = True
-            camera_horizontal_fov = self.cfg.depth.horizontal_fov 
-            camera_props.horizontal_fov = camera_horizontal_fov
+
+            if hasattr(config, "near_plane"):
+                camera_props.near_plane = config.near_plane
+                # print('Near plane has been set.')
+            
+            camera_horizontal_fov = config.horizontal_fov
+            if isinstance(camera_horizontal_fov, (tuple, list)):
+                camera_props.horizontal_fov = np.random.uniform(
+                    camera_horizontal_fov[0], camera_horizontal_fov[1])
+                # print('Camera horizontal fov has been randomized.')
+            else:
+                camera_props.horizontal_fov = camera_horizontal_fov
 
             camera_handle = self.gym.create_camera_sensor(env_handle, camera_props)
             self.cam_handles.append(camera_handle)
             
             local_transform = gymapi.Transform()
             
-            camera_position = np.copy(config.position)
-            camera_angle = np.random.uniform(config.angle[0], config.angle[1])
-            
-            local_transform.p = gymapi.Vec3(*camera_position)
-            local_transform.r = gymapi.Quat.from_euler_zyx(0, np.radians(camera_angle), 0)
+            if isinstance(config.position, dict):
+            # if False:
+                cam_x = np.random.normal(config.position['mean'][0], config.position['std'][0])
+                cam_y = np.random.normal(config.position['mean'][1], config.position['std'][1])
+                cam_z = np.random.normal(config.position['mean'][2], config.position['std'][2])
+                local_transform.p = gymapi.Vec3(cam_x, cam_y, cam_z)
+                print('Camera position: ', cam_x, cam_y, cam_z)
+                # print('Camera position has been randomized.')
+            else:
+                camera_position = np.copy(config.position)
+                local_transform.p = gymapi.Vec3(*camera_position)
+
+            # if False:
+            if hasattr(config, "rotation") and isinstance(config.rotation, dict):
+                cam_roll = np.random.uniform(0, 1) * (
+                    config.rotation["upper"][0] - config.rotation["lower"][0]) + config.rotation["lower"][0]
+                cam_pitch = np.random.uniform(0, 1) * (
+                    config.rotation["upper"][1] - config.rotation["lower"][1]) + config.rotation["lower"][1]
+                cam_yaw = np.random.uniform(0, 1) * (
+                    config.rotation["upper"][2] - config.rotation["lower"][2]) + config.rotation["lower"][2]
+                local_transform.r = gymapi.Quat.from_euler_zyx(cam_roll, cam_pitch, cam_yaw)
+                # print('Camera rotation has been randomized.')
+            else:
+                camera_angle = np.random.uniform(config.angle[0], config.angle[1])
+                local_transform.r = gymapi.Quat.from_euler_zyx(0, np.radians(camera_angle), 0)
             root_handle = self.gym.get_actor_root_rigid_body_handle(env_handle, actor_handle)
             
             self.gym.attach_camera_to_body(camera_handle, env_handle, root_handle, local_transform, gymapi.FOLLOW_TRANSFORM)
