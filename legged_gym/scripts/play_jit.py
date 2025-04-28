@@ -90,7 +90,6 @@ def play(args):
     env_cfg.domain_rand.randomize_base_mass = False
     env_cfg.domain_rand.randomize_base_com = False
 
-    depth_latent_buffer = []
     # prepare environment
     env: LeggedRobot
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
@@ -98,9 +97,6 @@ def play(args):
 
     if args.web:
         web_viewer.setup(env)
-
-    # load policy
-    train_cfg.runner.resume = true
 
     base_model, depth_encoder = load_model_path(device=env.device)
     base_model.eval()
@@ -114,15 +110,12 @@ def play(args):
     infos = {}
     infos["depth"] = env.depth_buffer.clone().to(env.device)[:, -1]
 
-    # depth_latent_yaw_saved_tensor = torch.tensor(())
-    depth_latent_yaw_list = []
-
-    actions_sim = np.zeros((1, 12))
+    obs_jit = torch.zeros((env.num_envs, 114), device=env.device)
 
     for i in range(10*int(env.max_episode_length)):
         if env.cfg.depth.use_camera:
             if infos["depth"] is not None:
-                depth_latent_yaw_list.append(infos["depth"].clone().cpu())
+                
                 depth_latent_and_yaw = depth_encoder(infos["depth"], obs_jit[:, :env.cfg.env.n_proprio])
 
                 depth_latent = depth_latent_and_yaw[:, :-2]
@@ -156,7 +149,6 @@ def play(args):
                         step_graphics=True,
                         render_all_camera_sensors=True,
                         wait_for_page_load=True)
-        id = env.lookat_id
 
 if __name__ == '__main__':
     EXPORT_POLICY = False
