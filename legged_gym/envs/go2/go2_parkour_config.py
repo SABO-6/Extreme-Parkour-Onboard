@@ -95,21 +95,15 @@ class Go2ParkourCfg( LeggedRobotCfg ):
     
     class depth( LeggedRobotCfg.depth):
         
-        position = dict(
-            mean = [0.24, -0.0175, 0.12],
-            std = [0.01, 0.0025, 0.03],
-        )
-        # position = (0.24, -0.0175, 0.07)
-        rotation = dict(
-            lower = [-0.1, 0.37, -0.1],
-            upper = [0.1, 0.43, 0.1],
-        )
-        # 广角
+        position = [0.355, 0, 0.065]
+        angle = [20, 25]
+        
         horizontal_fov = [86, 90]
-        # Depth image noise(not very useful, set to 0 in the original code)
-        dis_noise = 0.1
-        # The closet distance that the depth camera can see
-        near_plane = 0.2 # [m]
+        dis_noise = 0.0
+
+        gaussian_noise_std = 0.
+
+        near_plane = 0.1
 
 class Go2ParkourCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):

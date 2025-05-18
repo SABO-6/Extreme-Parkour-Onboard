@@ -53,6 +53,8 @@ from tqdm import tqdm
 import cv2
 import matplotlib.pyplot as plt
 
+np.set_printoptions(threshold=np.inf)
+
 def euler_from_quaternion(quat_angle):
         """
         Convert a quaternion into euler angles (roll, pitch, yaw)
@@ -121,15 +123,14 @@ class LeggedRobot(BaseTask):
 
         actions.to(self.device)
         self.action_history_buf = torch.cat([self.action_history_buf[:, 1:].clone(), actions[:, None, :].clone()], dim=1)
-        # False, no action delay
-        if self.cfg.domain_rand.action_delay:
-            if self.global_counter % self.cfg.domain_rand.delay_update_global_steps == 0:
-                if len(self.cfg.domain_rand.action_curr_step) != 0:
-                    self.delay = torch.tensor(self.cfg.domain_rand.action_curr_step.pop(0), device=self.device, dtype=torch.float)
-            if self.viewer:
-                self.delay = torch.tensor(self.cfg.domain_rand.action_delay_view, device=self.device, dtype=torch.float)
-            indices = -self.delay -1
-            actions = self.action_history_buf[:, indices.long()] # delay for 1/50=20ms
+        # if self.cfg.domain_rand.action_delay:
+        #     if self.global_counter % self.cfg.domain_rand.delay_update_global_steps == 0:
+        #         if len(self.cfg.domain_rand.action_curr_step) != 0:
+        #             self.delay = torch.tensor(self.cfg.domain_rand.action_curr_step.pop(0), device=self.device, dtype=torch.float)
+        #     if self.viewer:
+        #         self.delay = torch.tensor(self.cfg.domain_rand.action_delay_view, device=self.device, dtype=torch.float)
+        #     indices = -self.delay -1
+        #     actions = self.action_history_buf[:, indices.long()] # delay for 1/50=20ms
 
         self.global_counter += 1
         self.total_env_steps_counter += 1
@@ -167,10 +168,25 @@ class LeggedRobot(BaseTask):
     def process_depth_image(self, depth_image, env_id):
         # These operations are replicated on the hardware
         depth_image = self.crop_depth_image(depth_image)
+
+        if hasattr(self.cfg.depth, "guassian_noise_std"):
+            gaussian_noise = torch.randn_like(depth_image) * self.cfg.depth.guassian_noise_std
+            depth_image += gaussian_noise
+        
         depth_image += self.cfg.depth.dis_noise * 2 * (torch.rand(1)-0.5)[0]
+        # if self.cfg.depth.dis_noise > 0:
+        #     print('depth image has been noised.')
+        # print('depth image before clip and norm: ', depth_image)
         depth_image = torch.clip(depth_image, -self.cfg.depth.far_clip, -self.cfg.depth.near_clip)
+        # print('depth image after clip: ', depth_image)
         depth_image = self.resize_transform(depth_image[None, :]).squeeze()
+        # print('depth image before normalize: ', depth_image[-10:, :])
         depth_image = self.normalize_depth_image(depth_image)
+        # print('depth image sim: ', depth_image)
+        # np.save('depth_image_sim_336-11_flat.npy', depth_image.cpu().numpy())
+        # depth_image = torch.zeros_like(depth_image) + 0.5
+        # print('depth image after clip and norm: ', depth_image)
+        # print('min and max of depth image after clip and norm: ', depth_image.min(), depth_image.max())
         return depth_image
 
     def crop_depth_image(self, depth_image):
@@ -194,6 +210,9 @@ class LeggedRobot(BaseTask):
                                                                 gymapi.IMAGE_DEPTH)
             
             depth_image = gymtorch.wrap_tensor(depth_image_)
+            # print('depth image shape: ', depth_image.shape)
+            # print('The original depth image data: ', depth_image[:, :-5, :])
+            # np.save('depth_image.npy', depth_image.cpu().numpy())
             depth_image = self.process_depth_image(depth_image, i)
 
             init_flag = self.episode_length_buf <= 1
@@ -246,6 +265,7 @@ class LeggedRobot(BaseTask):
         self.roll, self.pitch, self.yaw = euler_from_quaternion(self.base_quat)
 
         contact = torch.norm(self.contact_forces[:, self.feet_indices], dim=-1) > 2.
+        # print('Foot contact: ', contact)
         self.contact_filt = torch.logical_or(contact, self.last_contacts) 
         self.last_contacts = contact
         
@@ -279,7 +299,15 @@ class LeggedRobot(BaseTask):
             if self.cfg.depth.use_camera:
                 window_name = "Depth Image"
                 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                cv2.imshow("Depth Image", self.depth_buffer[self.lookat_id, -1].cpu().numpy() + 0.5)
+                depth = self.depth_buffer[self.lookat_id, -1].cpu().numpy() # + 0.5
+                # path = '/home/zhanghb2023/project/extreme-parkour/images'
+                # print('depth data: ', depth)
+                # print('min of depth data: ', depth.min())
+                # print('shape of depth image: ', depth.shape)
+                # os.makedirs(path, exist_ok=True)
+                # print('depth number: ', depth)
+                # cv2.imwrite(os.path.join(path, 'depth_image.png'), depth)
+                cv2.imshow("Depth Image", depth)
                 cv2.waitKey(1)
 
     def reindex_feet(self, vec):
@@ -381,8 +409,6 @@ class LeggedRobot(BaseTask):
             self.rew_buf += rew
             self.episode_sums["termination"] += rew
     
-
-    ###############################################################################################################
     def compute_observations(self):
         """ 
         Computes observations
@@ -403,13 +429,17 @@ class LeggedRobot(BaseTask):
                             0*self.commands[:, 0:2], # 两个来自控制器的命令，占位？
                             self.commands[:, 0:1],  #[1,1] 前进速度命令
                             (self.env_class != 17).float()[:, None], # 为什么和第 17 个环境有关？
-                            (self.env_class == 17).float()[:, None], # parkour or walk
+                            (self.env_class == 17).float()[:, None],
                             self.reindex((self.dof_pos - self.default_dof_pos_all) * self.obs_scales.dof_pos), # 12
                             self.reindex(self.dof_vel * self.obs_scales.dof_vel), # 12
                             self.reindex(self.action_history_buf[:, -1]), # 12
                             self.reindex_feet(self.contact_filt.float()-0.5),# 与接触物的碰撞 # 四只脚的接触状态 # 可以获取
                             ),dim=-1) # 53
-        
+        # print('action stores in actino history buffer: ', self.reindex(self.action_history_buf[:, -1]))
+        # print('base ang vel: ', type(self.base_ang_vel), self.base_ang_vel)
+        # print('imu obs: ', type(imu_obs), imu_obs)
+        # print('dof pos: ', type(self.dof_pos), self.dof_pos)
+        # print('obs buf: ', type(obs_buf), obs_buf)
         # print('real yaw error', self.delta_yaw[:, None], self.delta_next_yaw[:, None])
         # print('real yaw', self.yaw[0])
         # print('commands shape: ', self.commands.shape)
@@ -442,6 +472,11 @@ class LeggedRobot(BaseTask):
         else:
             self.obs_buf = torch.cat([obs_buf, priv_explicit, priv_latent, self.obs_history_buf.view(self.num_envs, -1)], dim=-1)
         obs_buf[:, 6:8] = 0  # mask yaw in proprioceptive history
+        # print('epsidoe length buf shape: ', self.episode_length_buf.shape)
+        # print('obs buf shape: ', obs_buf.shape)
+        # print('history length: ', self.cfg.env.history_len)
+        # print('obs history buf shape: ', self.obs_history_buf.shape)
+        # print('obs buf squeeze shape: ', obs_buf.unsqueeze(1).shape)
         self.obs_history_buf = torch.where(
             (self.episode_length_buf <= 1)[:, None, None], 
             torch.stack([obs_buf] * self.cfg.env.history_len, dim=1),
@@ -459,6 +494,9 @@ class LeggedRobot(BaseTask):
                 self.contact_filt.float().unsqueeze(1)
             ], dim=1)
         )
+
+        # print('obs buf shape: ', self.obs_buf.shape)
+        # print('obs buf in compute obs: ', self.obs_buf)
         
         
     def get_noisy_measurement(self, x, scale):
@@ -541,7 +579,9 @@ class LeggedRobot(BaseTask):
             self.torque_limits = torch.zeros(self.num_dof, dtype=torch.float, device=self.device, requires_grad=False)
             for i in range(len(props)):
                 self.dof_pos_limits[i, 0] = props["lower"][i].item()
+                print('lower: ', self.dof_pos_limits[i, 0])
                 self.dof_pos_limits[i, 1] = props["upper"][i].item()
+                print('upper: ', self.dof_pos_limits[i, 1])
                 self.dof_vel_limits[i] = props["velocity"][i].item()
                 self.torque_limits[i] = props["effort"][i].item()
                 # soft limits
@@ -626,7 +666,7 @@ class LeggedRobot(BaseTask):
                 torques = self.p_gains*(actions_scaled + self.default_dof_pos_all - self.dof_pos) - self.d_gains*self.dof_vel
             else:
                 torques = self.motor_strength[0] * self.p_gains*(actions_scaled + self.default_dof_pos_all - self.dof_pos) - self.motor_strength[1] * self.d_gains*self.dof_vel
-                
+
         elif control_type=="V":
             torques = self.p_gains*(actions_scaled - self.dof_vel) - self.d_gains*(self.dof_vel - self.last_dof_vel)/self.sim_params.dt
         elif control_type=="T":
@@ -788,6 +828,7 @@ class LeggedRobot(BaseTask):
             name = self.dof_names[i]
             angle = self.cfg.init_state.default_joint_angles[name]
             self.default_dof_pos[i] = angle
+            # print(f'The default position of {name} is {self.default_dof_pos[i]}.')
             found = False
             for dof_name in self.cfg.control.stiffness.keys():
                 if dof_name in name:
@@ -888,31 +929,6 @@ class LeggedRobot(BaseTask):
         self.x_edge_mask = torch.tensor(self.terrain.x_edge_mask).view(self.terrain.tot_rows, self.terrain.tot_cols).to(self.device)
 
 
-    # def attach_camera(self, i, env_handle, actor_handle):
-    #     if self.cfg.depth.use_camera:
-    #         config = self.cfg.depth
-    #         camera_props = gymapi.CameraProperties()
-    #         camera_props.width = self.cfg.depth.original[0]
-    #         camera_props.height = self.cfg.depth.original[1]
-    #         camera_props.enable_tensors = True
-    #         camera_horizontal_fov = self.cfg.depth.horizontal_fov 
-    #         camera_props.horizontal_fov = camera_horizontal_fov
-
-    #         camera_handle = self.gym.create_camera_sensor(env_handle, camera_props)
-    #         self.cam_handles.append(camera_handle)
-            
-    #         local_transform = gymapi.Transform()
-            
-    #         camera_position = np.copy(config.position)
-    #         camera_angle = np.random.uniform(config.angle[0], config.angle[1])
-            
-    #         local_transform.p = gymapi.Vec3(*camera_position)
-    #         local_transform.r = gymapi.Quat.from_euler_zyx(0, np.radians(camera_angle), 0)
-    #         root_handle = self.gym.get_actor_root_rigid_body_handle(env_handle, actor_handle)
-            
-    #         self.gym.attach_camera_to_body(camera_handle, env_handle, root_handle, local_transform, gymapi.FOLLOW_TRANSFORM)
-
-    # Add randomization to camera position, rotation, horizontal_fov, near_plane
     def attach_camera(self, i, env_handle, actor_handle):
         if self.cfg.depth.use_camera:
             config = self.cfg.depth
@@ -951,14 +967,15 @@ class LeggedRobot(BaseTask):
                 local_transform.p = gymapi.Vec3(*camera_position)
 
             # if False:
-            if hasattr(config, "rotation") and isinstance(config.rotation, dict):
-                cam_roll = np.random.uniform(0, 1) * (
-                    config.rotation["upper"][0] - config.rotation["lower"][0]) + config.rotation["lower"][0]
-                cam_pitch = np.random.uniform(0, 1) * (
-                    config.rotation["upper"][1] - config.rotation["lower"][1]) + config.rotation["lower"][1]
-                cam_yaw = np.random.uniform(0, 1) * (
-                    config.rotation["upper"][2] - config.rotation["lower"][2]) + config.rotation["lower"][2]
-                local_transform.r = gymapi.Quat.from_euler_zyx(cam_roll, cam_pitch, cam_yaw)
+            if hasattr(config, "rotation"):
+                if isinstance(config.rotation, dict):
+                    cam_roll = np.random.uniform(0, 1) * (
+                        config.rotation["upper"][0] - config.rotation["lower"][0]) + config.rotation["lower"][0]
+                    cam_pitch = np.random.uniform(0, 1) * (
+                        config.rotation["upper"][1] - config.rotation["lower"][1]) + config.rotation["lower"][1]
+                    cam_yaw = np.random.uniform(0, 1) * (
+                        config.rotation["upper"][2] - config.rotation["lower"][2]) + config.rotation["lower"][2]
+                    local_transform.r = gymapi.Quat.from_euler_zyx(cam_roll, cam_pitch, cam_yaw)
                 # print('Camera rotation has been randomized.')
             else:
                 camera_angle = np.random.uniform(config.angle[0], config.angle[1])
@@ -999,6 +1016,7 @@ class LeggedRobot(BaseTask):
         self.num_dof = self.gym.get_asset_dof_count(robot_asset)
         self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
         dof_props_asset = self.gym.get_asset_dof_properties(robot_asset)
+        print('dof props asset: ', dof_props_asset)
         rigid_shape_props_asset = self.gym.get_asset_rigid_shape_properties(robot_asset)
 
         # save body names from the asset
@@ -1210,7 +1228,8 @@ class LeggedRobot(BaseTask):
             edge_geom = gymutil.WireframeSphereGeometry(0.02, 16, 16, None, color=(1, 0, 0))
 
             feet_pos = self.rigid_body_states[:, self.feet_indices, :3]
-            for i in range(4):
+            # for i in range(4): ##################################################################################
+            for i in range(1):
                 pose = gymapi.Transform(gymapi.Vec3(feet_pos[self.lookat_id, i, 0], feet_pos[self.lookat_id, i, 1], feet_pos[self.lookat_id, i, 2]), r=None)
                 if self.feet_at_edge[self.lookat_id, i]:
                     gymutil.draw_lines(edge_geom, self.gym, self.viewer, self.envs[i], pose)
