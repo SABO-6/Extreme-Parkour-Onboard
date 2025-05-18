@@ -102,7 +102,7 @@ class Go2ParkourCfg( LeggedRobotCfg ):
         dis_noise = 0.0
 
         gaussian_noise_std = 0.
-
+        # The nearest distance that the depth camera can see
         near_plane = 0.1
 
 class Go2ParkourCfgPPO( LeggedRobotCfgPPO ):
